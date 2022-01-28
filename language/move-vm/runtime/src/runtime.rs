@@ -377,19 +377,22 @@ impl VMRuntime {
         for (idx, (arg, arg_type)) in args.into_iter().zip(params).enumerate() {
             match arg_type {
                 Type::MutableReference(inner_t) => {
-                    dummy_locals
-                        .store_loc(idx, self.deserialize_value(&inner_t, arg).unwrap())
-                        .unwrap();
-                    actuals.push(dummy_locals.borrow_loc(idx).unwrap());
+                    if let Err(err) = self.arg_to_actual(idx, arg, &inner_t, &mut dummy_locals, &mut actuals) {
+                        return Err(err.finish(Location::Undefined));
+                    }
                     mut_ref_inputs.push((idx, *inner_t));
                 }
                 Type::Reference(inner_t) => {
-                    dummy_locals
-                        .store_loc(idx, self.deserialize_value(&inner_t, arg).unwrap())
-                        .unwrap();
-                    actuals.push(dummy_locals.borrow_loc(idx).unwrap())
+                    if let Err(err) = self.arg_to_actual(idx, arg, &inner_t, &mut dummy_locals, &mut actuals) {
+                        return Err(err.finish(Location::Undefined));
+                    }
                 }
-                arg_type => actuals.push(self.deserialize_value(&arg_type, arg).unwrap()),
+                arg_type => {
+                    match self.deserialize_value(&arg_type, arg) {
+                        Ok(val) => actuals.push(val),
+                        Err(err) => return Err(err.finish(Location::Undefined)),
+                    };
+                }
             }
         }
 
@@ -432,17 +435,40 @@ impl VMRuntime {
 
         let mut serialized_mut_ref_outputs = Vec::new();
         for (idx, ty) in mut_ref_inputs {
-            let val = dummy_locals.move_loc(idx).unwrap();
+            let val = match dummy_locals.move_loc(idx) {
+                Ok(v) => v,
+                Err(e) => return Err(e.finish(Location::Undefined)),
+            };
             let layout = self.loader.type_to_type_layout(&ty).map_err(|_err| {
                 PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
                     .with_message("cannot be called with non-serializable return type".to_string())
                     .finish(Location::Undefined)
             })?;
-            let val_bytes = val.simple_serialize(&layout).unwrap();
-            serialized_mut_ref_outputs.push(val_bytes)
+            match val.simple_serialize(&layout) {
+                Some(bytes) => serialized_mut_ref_outputs.push(bytes),
+                None => return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
+                                .with_message("failed to serialize mutable ref values".to_string())
+                                .finish(Location::Undefined)),
+            };
         }
 
         Ok((serialized_return_vals, serialized_mut_ref_outputs))
+    }
+    
+    fn arg_to_actual(&self, idx: usize, arg: Vec<u8>, arg_t: &Box<Type>, locals: &mut Locals, actuals: &mut Vec<Value>) 
+    -> Result<(), PartialVMError> {
+        let arg_value = match self.deserialize_value(&arg_t, arg) {
+            Ok(val) => val,
+            Err(err) => return Err(err),
+        };
+        if let Err(err) = locals.store_loc(idx, arg_value) {
+            return Err(err)
+        };
+        match locals.borrow_loc(idx) {
+            Ok(val) => { actuals.push(val) },
+            Err(err) => return Err(err),
+        };
+        Ok(())
     }
 
     fn execute_function_impl<F>(

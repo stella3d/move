@@ -10,7 +10,7 @@ use crate::{
 };
 use anyhow::Result;
 use move_core_types::{
-    errmap::ErrorMapping, language_storage::TypeTag, parser,
+    errmap::ErrorMapping, gas_schedule::CostTable, language_storage::TypeTag, parser,
     transaction_argument::TransactionArgument,
 };
 use move_package::compilation::package_layout::CompiledPackageLayout;
@@ -134,12 +134,17 @@ pub struct StructLayoutOptions {
     /// Generate layout bindings for `struct` bound to these type arguments.
     #[structopt(long = "type-args", parse(try_from_str = parser::parse_type_tag), requires="struct")]
     type_args: Option<Vec<TypeTag>>,
+    /// If set, generate bindings only for the struct passed in.
+    /// When unset, generates bindings for the struct and all of its transitive dependencies.
+    #[structopt(long = "shallow")]
+    shallow: bool,
 }
 
 impl SandboxCommand {
     pub fn handle_command(
         &self,
         natives: Vec<NativeFunctionRecord>,
+        cost_table: &CostTable,
         error_descriptions: &ErrorMapping,
         move_args: &Move,
         storage_dir: &Path,
@@ -155,6 +160,7 @@ impl SandboxCommand {
                 let state = context.prepare_state(storage_dir)?;
                 sandbox::commands::publish(
                     natives,
+                    cost_table,
                     &state,
                     context.package(),
                     *no_republish,
@@ -177,6 +183,7 @@ impl SandboxCommand {
                 let state = context.prepare_state(storage_dir)?;
                 sandbox::commands::run(
                     natives,
+                    cost_table,
                     error_descriptions,
                     &state,
                     context.package(),
@@ -246,6 +253,7 @@ fn handle_generate_commands(cmd: &GenerateCommand, state: &OnDiskStateView) -> R
                 module,
                 &options.struct_,
                 &options.type_args,
+                options.shallow,
                 state,
             )
         }

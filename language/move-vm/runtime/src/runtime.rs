@@ -358,7 +358,6 @@ impl VMRuntime {
         data_store: &mut impl DataStore,
         gas_status: &mut GasStatus,
     ) -> VMResult<(Vec<Vec<u8>>, Vec<Vec<u8>>)> {
-        // TODO: convert numerous unwraps below into the appropriate error
         let is_script_execution = false;
         let (func, ty_args, params, return_tys) = self.loader.load_function(
             function_name,

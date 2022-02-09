@@ -18,20 +18,20 @@ const TEST_ADDR: AccountAddress = AccountAddress::new([42; AccountAddress::LENGT
 const TEST_MODULE_ID: &str = "M";
 
 #[test]
-fn first_notdone() {
+fn basic_mutref_out() {
     let vm = MoveVM::new(vec![]).unwrap();
     let mut storage = InMemoryStorage::new();
 
-    let fun_label = "foo";
     let use_mutref_label = "use_mutref";
+    let expect_mutref_value: u32 = 90;
+    // use_mutref writes to the mutable reference, so we can exercise mut ref output code
     let code = format!(
         r#"
         module 0x{}::{} {{
-            fun {}() {{ }}
-            fun {}(_a: &mut u64) {{ }}
+            fun {}(a: &mut u64) {{ *a = {}; }}
         }}
     "#,
-        TEST_ADDR, TEST_MODULE_ID, fun_label, use_mutref_label
+        TEST_ADDR, TEST_MODULE_ID, use_mutref_label, expect_mutref_value
     );
 
     let mut units = compile_units(&code).unwrap();
@@ -43,7 +43,6 @@ fn first_notdone() {
     storage.publish_or_overwrite_module(module_id.clone(), blob);
 
     let sess = vm.new_session(&storage);
-    let fun_name = Identifier::new(fun_label).unwrap();
     let use_mutref_name = Identifier::new(use_mutref_label).unwrap();
     let mut gas_status = GasStatus::new_unmetered();
 
@@ -57,9 +56,6 @@ fn first_notdone() {
         );
 
     log_exec_result(&result);
-
-    //println!("NOTDONE - err:  {:?}", &result);
-    // assert_eq!(err.status_type(), StatusType::Verification);
 }
 
 fn log_exec_result(result: &ExecutionResult) {

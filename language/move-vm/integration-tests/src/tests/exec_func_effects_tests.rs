@@ -5,12 +5,12 @@ use std::convert::TryInto;
 
 use move_core_types::{
     account_address::AccountAddress,
-    identifier::{Identifier},
-    language_storage::{ModuleId},
+    identifier::Identifier,
+    language_storage::ModuleId,
     value::{MoveValue, serialize_values}, vm_status::StatusCode
 };
-use move_vm_runtime::{move_vm::MoveVM, session::{ExecutionResult, self}};
-use move_vm_test_utils::{InMemoryStorage};
+use move_vm_runtime::{move_vm::MoveVM, session::ExecutionResult};
+use move_vm_test_utils::InMemoryStorage;
 use move_vm_types::gas_schedule::GasStatus;
 
 use crate::compiler::{compile_units, as_module};
@@ -19,14 +19,40 @@ use crate::compiler::{compile_units, as_module};
 const TEST_ADDR: AccountAddress = AccountAddress::new([42; AccountAddress::LENGTH]);
 const TEST_MODULE_ID: &str = "M";
 const EXPECT_MUTREF_OUT_VALUE: u64 = 90;
+const USE_MUTREF_LABEL: &str = "use_mutref";
+const USE_REF_LABEL: &str = "use_ref";
+const FUN_NAMES: [&str; 2] = [USE_MUTREF_LABEL, USE_REF_LABEL];
 
-
+// ensure proper errors are returned when ref & mut ref args fail to deserialize
 #[test]
-fn mutref_arg_success() {
-    match run(MoveValue::U64(1)) {
+fn fail_arg_deserialize() {
+    let mod_code = setup_module();
+
+    vec![MoveValue::U8(16), MoveValue::U128(512), MoveValue::Bool(true)]
+    .iter()
+    .for_each(|mv| {
+        FUN_NAMES.iter().for_each(|name| {
+            match run(&mod_code, name, mv.clone()) {
+                ExecutionResult::Success { .. } => {
+                    panic!("Should have failed to deserialize non-u64 type to u64");
+                },
+                ExecutionResult::Fail { error, .. } => {
+                    assert_eq!(error.major_status(), StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT);
+                }
+            }
+        });
+    });
+}
+
+// check happy path for writing to mut ref args - may be unecessary / covered by other tests
+#[test]
+fn mutref_output_success() {
+    let mod_code = setup_module();
+    match run(&mod_code, USE_MUTREF_LABEL, MoveValue::U64(1)) {
         ExecutionResult::Success { mutable_ref_values, .. } => {
-            let first_parsed = parse_u64_arg(mutable_ref_values.first().unwrap());
-            assert_eq!(EXPECT_MUTREF_OUT_VALUE, first_parsed)
+            assert_eq!(1, mutable_ref_values.len());
+            let parsed = parse_u64_arg(mutable_ref_values.first().unwrap());
+            assert_eq!(EXPECT_MUTREF_OUT_VALUE, parsed);
         },
         ExecutionResult::Fail { error, .. } => {
             panic!("{:?}", error);
@@ -34,99 +60,56 @@ fn mutref_arg_success() {
     }
 }
 
-#[test]
-fn fail_arg_deserialize() {
-    vec![MoveValue::U8(16), MoveValue::U128(512), MoveValue::Bool(true)]
-    .iter()
-    .for_each(|mv| {
-        match run(mv.clone()) {
-            ExecutionResult::Success { .. } => {
-                panic!("Should have failed to deserialize non-u64 type to u64");
-            },
-            ExecutionResult::Fail { error, .. } => {
-                println!("{:?}", error);
-                assert_eq!(error.major_status(), StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT);
-            }
-        }
-    });
-}
+// TODO - how can we cause serialization errors in values returned from Move ?
+// that would allow us to test error paths for outputs as well
 
-fn run(arg_val0: MoveValue) -> ExecutionResult {
-    let use_mutref_label = "use_mutref";
-    // use_mutref writes to the mutable reference, so we can exercise mut ref output code
+fn setup_module() -> ModuleCode {
+    // first function takes a mutable ref & writes to it, the other takes immutable ref, so we exercise both paths
     let code = format!(
         r#"
         module 0x{}::{} {{
             fun {}(a: &mut u64) {{ *a = {}; }}
+            fun {}(_a: & u64) {{ }}
         }}
     "#,
-        TEST_ADDR, TEST_MODULE_ID, use_mutref_label, EXPECT_MUTREF_OUT_VALUE
+        TEST_ADDR, TEST_MODULE_ID, USE_MUTREF_LABEL, EXPECT_MUTREF_OUT_VALUE, USE_REF_LABEL
     );
 
     let module_id = ModuleId::new(TEST_ADDR, Identifier::new(TEST_MODULE_ID).unwrap());
+    (module_id, code)
+}
 
-    let modules = vec![(module_id.clone(), code)];
+fn run(module: &ModuleCode, fun_name: &str, arg_val0: MoveValue) -> ExecutionResult {
+    let module_id = &module.0;
+    let modules = vec![module.clone()];
     let (vm, storage) = setup_vm(&modules);
     let sess = vm.new_session(&storage);
 
-    let use_mutref_name = Identifier::new(use_mutref_label).unwrap();
+    let fun_name = Identifier::new(fun_name).unwrap();
     let mut gas_status = GasStatus::new_unmetered();
 
-    let result = sess
-        .execute_function_for_effects(
-            &module_id,
-            &use_mutref_name,
-            vec![],
-            serialize_values(&vec![arg_val0]),
-            &mut gas_status
-        );
-
-    //log_exec_result(&result);
-    result
+    sess.execute_function_for_effects(
+        &module_id,
+        &fun_name,
+        vec![],
+        serialize_values(&vec![arg_val0]),
+        &mut gas_status
+    )
 }
 
 type ModuleCode = (ModuleId, String);
 
+// TODO - move some utility functions to where test infra lives, see about unifying with similar code
 fn setup_vm(modules: &Vec<ModuleCode>) -> (MoveVM, InMemoryStorage) {
     let mut storage = InMemoryStorage::new();
     compile_modules(&mut storage, modules);
     (MoveVM::new(vec![]).unwrap(), storage)
 }
 
-// TODO - move this to where test infra lives, see about unifying with similar code
 fn compile_modules(mut storage: &mut InMemoryStorage, modules: &Vec<ModuleCode>) {
     modules.iter().for_each(|(id, code)| {
         compile_module(&mut storage, &id, &code);
     });
-}
-
-fn log_exec_result(result: &ExecutionResult) {
-    match result {
-        session::ExecutionResult::Success { 
-            change_set: _, 
-            events, 
-            return_values, 
-            mutable_ref_values, 
-            gas_used 
-        } => {
-            println!("execution result:  SUCCESS");
-            println!("gas used:  {}", gas_used);
-            events.iter().for_each(|e| {
-                println!("event:  {:?}", e);
-            });
-            return_values.iter().for_each(|rv| {
-                println!("return value:  {:?}", rv);
-            });
-            mutable_ref_values.iter().for_each(|mr| {
-                println!("mut ref value:  {:?}", mr);
-            });
-        },
-        session::ExecutionResult::Fail { error, gas_used } => {
-            println!("execution result:  FAIL");
-            println!("error:  {}", &error);
-            println!("gas used:  {}", gas_used);
-        }
-    }
 }
 
 fn compile_module(storage: &mut InMemoryStorage, mod_id: &ModuleId, code: &String) {

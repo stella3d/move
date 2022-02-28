@@ -452,22 +452,30 @@ impl VMRuntime {
             })?;
             match val.simple_serialize(&layout) {
                 Some(bytes) => serialized_mut_ref_outputs.push(bytes),
-                None => return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                                .with_message("failed to serialize mutable ref values".to_string())
-                                .finish(Location::Undefined)),
+                None => {
+                    return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
+                        .with_message("failed to serialize mutable ref values".to_string())
+                        .finish(Location::Undefined))
+                }
             };
         }
 
         Ok((serialized_return_vals, serialized_mut_ref_outputs))
     }
 
-    fn borrow_arg(&self, idx: usize, arg: Vec<u8>, arg_t: &Box<Type>, locals: &mut Locals) -> Result<Value, PartialVMError> {
-        let arg_value = match self.deserialize_value(&arg_t, arg) {
+    fn borrow_arg(
+        &self,
+        idx: usize,
+        arg: Vec<u8>,
+        arg_t: &Type,
+        locals: &mut Locals,
+    ) -> Result<Value, PartialVMError> {
+        let arg_value = match self.deserialize_value(arg_t, arg) {
             Ok(val) => val,
             Err(err) => return Err(err),
         };
         if let Err(err) = locals.store_loc(idx, arg_value) {
-            return Err(err)
+            return Err(err);
         };
         let val = match locals.borrow_loc(idx) {
             Ok(v) => v,
